@@ -1,0 +1,30 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Dec  6 20:41:20 2022
+
+@author: powerfalker
+"""
+
+from libpysal.weights import Queen
+import geopandas as gpd
+ 
+# where is the spatial file
+shp_path = "/Users/powerfalker/Desktop/Geo/cb_2021_us_tract_500k/cb_2021_us_tract_500k.shp"
+ 
+# read it into a geopandas geoDataFrame
+gdf = gpd.read_file(shp_path)
+ 
+# use a named ID Variable (GEOID is the unique ID in my test file)
+w_queen_id = Queen.from_dataframe(gdf, idVariable='GEOID')
+ 
+# run through some results and make a table!
+# maybe cleaner ways to do this, but this was fast for me
+rows = []
+for key in w_queen_id.neighbors:
+    for id in w_queen_id.neighbors[key]:
+       rows.append([key, id])
+ 
+# write the results to a csv
+df = gpd.GeoDataFrame(rows, columns=["originID", "neighID"])
+df.to_csv(r"neighbor_list.csv")
