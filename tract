@@ -1,0 +1,342 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+Created on Tue Dec  6 20:21:17 2022
+
+@author: harrypope
+"""
+
+    # loading / prepping datasets for analysis
+
+import numpy as np
+import pandas as pd
+
+    ## ATTENTION!!! - THINGS TO CHANGE BEFORE YOU RUN - IMPORTANT!!!!! ##
+
+acs_avg= 5.5 # set the national unemployment average from the ACS
+luas_avg= 5.3 # set the national unemployment average from the LUAS
+
+    # input data paths #
+
+dp03path=r'Input/ACSDP5Y2020.DP03-Data.csv' # ACS 5 Data by Census Tract
+geocorrpath1=r'Input/geocorr2022_tract_place_cbsa.csv' # Tract to MSA & Place Crosswalk w/ Decennial Pop
+geocorrpath2=r'Input/geocorr2022_county_cbsa.csv'
+geocorrpath3=r'Input/geocorr2022_place_cbsa.csv'
+geocorrpath4=r'Input/geocorr2022_tract_cbsa.csv'
+
+list2path=r'Input/list2_2020.xls' # source: https://www.census.gov/geographies/reference-files/time-series/demo/metro-micro/delineation-files.html
+subestpath=r'Input/sub-est2021_all.csv' # source: https://www.census.gov/data/tables/time-series/demo/popest/2020s-total-cities-and-towns.html#ds
+
+decennialpath=r'DECENNIALPL2020.P1-Data.csv'
+
+    # input spatial and adjacent neighbor files - used for the Geopandas section
+
+shp_path = r'Shapefiles/cb_2021_us_tract_500k.shp'
+
+adj_path= r'Input/neighbor_list.csv' # neighbor list produced from this program
+adj_missing=r'Check/missing_neighbors.csv' # list of tracts without neighbors
+
+adj_dat=pd.read_csv(adj_path)
+adj_other=pd.read_csv(adj_missing)
+
+    ## Output files ##
+
+dat_out=r'Output/Py_TEA_Out.csv' # This is the final dataset
+adj_out=r'Check/Py_NULL_Out.csv' # This is to check for missing tracts
+
+    ## ATTENTION!!! - Next section of code should not be changed !!!!! ##
+
+###############################################################################
+
+    # get population estimates from Census #
+    
+subestraw=pd.read_csv(subestpath,encoding='latin-1')
+
+cols_to_include={'STATE','STNAME','COUNTY','PLACE','NAME','ESTIMATESBASE2020'}
+renaming = {'STNAME':'NAME_STATE','NAME':'NAME_PLACE','STATE':'CENSUS_STATE', 'PLACE':'CENSUS_PLACE','COUNTY':'CENSUS_COUNTY'}
+
+subest = subestraw[cols_to_include].rename(renaming, axis=1)
+
+subest = subest.applymap(str)
+
+subest.CENSUS_STATE = subest.CENSUS_STATE.astype(str).str.zfill(2)
+subest.CENSUS_COUNTY = subest.CENSUS_COUNTY.astype(str).str.zfill(3)
+subest.CENSUS_PLACE = subest.CENSUS_PLACE.astype(str).str.zfill(5)
+
+#subest2=subest[(subest.CENSUS_COUNTY!='000')]
+#subest2=subest2[(subest.CENSUS_PLACE!='00000')]
+#subest2=subest2[(subest2.CENSUS_PLACE!='99990')]
+
+subest.CENSUS_PLACE = subest.CENSUS_STATE+subest.CENSUS_PLACE
+subest.CENSUS_COUNTY = subest.CENSUS_STATE+subest.CENSUS_COUNTY
+    
+    ### get delineation file from census #
+
+list2raw=pd.read_excel(list2path, skiprows=2)
+
+list2=list2raw.rename({'CBSA Code':'CENSUS_CBSA','Principal City Name':'NAME_PLACE', 
+                       'CBSA Title':'NAME_CBSA','Metropolitan/Micropolitan Statistical Area':'MSA',
+                       'FIPS State Code':'CENSUS_STATE',
+                       'FIPS Place Code':'CENSUS_PLACE'}, axis=1).applymap(str)
+
+list2.CENSUS_STATE = list2.CENSUS_STATE.astype(str).str.zfill(4)
+list2.CENSUS_PLACE = list2.CENSUS_PLACE.astype(str).str.zfill(7)
+list2.CENSUS_STATE = list2.CENSUS_STATE.str.rstrip('0')
+list2.CENSUS_PLACE = list2.CENSUS_PLACE.str.rstrip('0')
+list2.CENSUS_STATE = list2.CENSUS_STATE.str.rstrip('.')
+list2.CENSUS_PLACE = list2.CENSUS_PLACE.str.rstrip('.')
+
+list2.CENSUS_PLACE=list2.CENSUS_STATE+list2.CENSUS_PLACE
+list2.drop(list2.tail(4).index,inplace=True)
+
+    # merge delineation file with population estimates #
+    
+cw_place_pop = list2.merge(subest[{'CENSUS_PLACE','ESTIMATESBASE2020'}], on='CENSUS_PLACE', how='inner')
+
+    ### get crosswalk and population data ###
+    
+    # note: crosswalks are from https://mcdc.missouri.edu/applications/geocorr2022.html #
+
+    ## geo crosswalk for place and tract ##
+
+geocorr1=pd.read_csv(geocorrpath1,encoding='latin-1')
+geocorr1=geocorr1.drop(axis=0, index=0) 
+
+cw_tract_place = geocorr1.applymap(str)
+
+cw_tract_place.tract = cw_tract_place.tract.str.replace(".", "", 1)
+
+cw_tract_place.tract=cw_tract_place.county+cw_tract_place.tract
+
+cw_tract_place=cw_tract_place[{'county','tract','state','place','cbsa20','cbsatype20','placesc','CountyName','PlaceName'}]
+                        
+    ## geo crosswalk for county and cbsa ##
+
+geocorr2=pd.read_csv(geocorrpath2,encoding='latin-1')
+geocorr2=geocorr2.drop(axis=0, index=0) 
+
+cw_county_cbsa = geocorr2.applymap(str)
+
+cw_county_cbsa=cw_county_cbsa[{'county','cbsa20','cbsatype20','CountyName'}]
+          
+    ## geo crosswalk for place and cbsa ##
+        
+geocorr3=pd.read_csv(geocorrpath3,encoding='latin-1')
+geocorr3=geocorr3.drop(axis=0, index=0) 
+
+cw_place_cbsa = geocorr3.applymap(str)
+
+cw_place_cbsa=cw_place_cbsa[{'state','place','cbsa20','cbsatype20','placesc','PlaceName','pop20'}]
+           
+   ## geo crosswalk for tract and cbsa ##
+
+geocorr4=pd.read_csv(geocorrpath4,encoding='latin-1')
+geocorr4=geocorr4.drop(axis=0, index=0) 
+
+cw_tract_cbsa = geocorr4.applymap(str)
+
+cw_tract_cbsa.tract = cw_tract_cbsa.tract.str.replace(".", "", 1)
+
+cw_tract_cbsa.tract=cw_tract_cbsa.county+cw_tract_cbsa.tract
+
+cw_tract_cbsa=cw_tract_cbsa[{'county','tract','cbsa20','cbsatype20','CountyName'}]
+
+    ## get place population into the census tract file ##
+    
+cw_crosswalk=cw_tract_place.merge(cw_place_cbsa, on=['state','place','cbsa20'], how='left').drop({'cbsatype20_y','placesc_y','PlaceName_y'},axis=1)
+
+cw_crosswalk.to_excel(r'Check/cw_check.xlsx')
+
+###############################################################################
+
+    # get unemployment data
+
+dp03raw = pd.read_csv(dp03path)
+
+cols_to_include = {'GEO_ID', 'NAME', 'DP03_0003E', 'DP03_0005E'}
+renaming = {'NAME': 'NAME_TRACT'}
+
+dp03 = dp03raw[cols_to_include].rename(renaming, axis=1)
+dp03b = dp03.drop(axis=0, index=0)
+
+    ## MAKE NEW VARS ##
+
+df = pd.DataFrame(dp03b)
+
+df['CENSUS_STATE'] = df['GEO_ID'].str[9:11]
+df['CENSUS_COUNTY'] = df['GEO_ID'].str[9:14]
+df['CENSUS_TRACT'] = df['GEO_ID'].str[9:20]
+
+#dfcheck=dfp3[(dfp3.CENSUS_TRACT=='24021752201')]
+
+    # merge crosswalk with econ data #
+
+df2=df.merge(cw_crosswalk, left_on=['CENSUS_TRACT','CENSUS_COUNTY'], right_on=['tract','county'], how='left').drop_duplicates()
+
+#df2.to_excel(r'Check/DF2_check.xlsx')
+
+df2a=df2[(df2.place.notnull())].drop({'state'},axis=1)
+missing_place=df2[(df2.place.isnull())]
+
+fix_place=missing_place.drop({'place','CountyName','cbsa20','county','tract','cbsatype20_x','state','PlaceName_x','pop20'},axis=1).merge(cw_tract_cbsa, left_on=['CENSUS_TRACT','CENSUS_COUNTY'], right_on=['tract','county'], how='left')
+
+df2b=fix_place[(fix_place.cbsa20.notnull())].drop({'placesc_x'},axis=1)
+missing_cbsa=fix_place[(fix_place.cbsa20.isnull())].drop({'placesc_x'},axis=1)
+
+#df2fix.to_excel(r'Check/DF2fix_check.xlsx')
+
+fix_cbsa=missing_cbsa.drop({'county','cbsatype20','CountyName','cbsa20','tract'},axis=1).merge(cw_county_cbsa, left_on='CENSUS_COUNTY', right_on='county', how='inner')
+
+#df2fix2.to_excel(r'Check/DF2fix2_check.xlsx')
+
+fix_pop=fix_cbsa.drop({'county','cbsatype20','CountyName','CENSUS_STATE'},axis=1).merge(cw_place_pop[{'CENSUS_CBSA','ESTIMATESBASE2020'}], left_on='cbsa20', right_on='CENSUS_CBSA', how='inner').drop_duplicates()
+
+df2c=fix_pop
+
+#df2fix3.to_excel(r'Check/DF2fix3_check.xlsx')
+
+    # append fixed tracts to the OK tracts
+    
+df2ab=df2a.append(df2b)
+
+    # create new variables #
+
+df2.DP03_0005E=df2.DP03_0005E.fillna(0).astype(int)
+df2.DP03_0003E=df2.DP03_0003E.fillna(0).astype(int)
+
+df2['Unemp_Rate']= round((df2.DP03_0005E/df2.DP03_0003E)*100,2)
+df2['HUA_ACS']= np.where(df2.Unemp_Rate*1.5 > acs_avg, 'YES', 'NO')
+df2['HUA_LUAS']= np.where(df2.Unemp_Rate*1.5 > luas_avg, 'YES', 'NO')
+
+df2['LOW_POP'] = np.where(df2.POP.fillna(0).astype(int) <= 20000, 'YES', 'NO')
+df2['MSA_CHECK'] = np.where((df2.MSA == 'Metro'), 'YES', 'NO')
+df2['QUALIFIED_RURAL'] = np.where((df2.MSA_CHECK == 'NO') & (df2.LOW_POP == 'YES'), 'YES', 'NO')
+           
+###############################################################################
+
+    ## get neighbors ##
+
+#from libpysal.weights import Queen
+#import geopandas as gpd
+ 
+#adjdf = gpd.read_file(shp_path)
+
+#w_queen_id = Queen.from_dataframe(adjdf, idVariable='GEOID')
+ 
+#rows = []
+#for key in w_queen_id.neighbors:
+#    for id in w_queen_id.neighbors[key]:
+#       rows.append([key, id])
+ 
+#adj_dat = gpd.GeoDataFrame(rows, columns=["OriginTract", "NeighborTract"])
+#adj_dat.to_csv(adj_path)
+
+    ## LOAD NEIGHBOR FILE ##
+
+neighbor=adj_dat
+neighbor=neighbor.append(adj_other)
+
+renaming = {'NAME':'NAME_COUNTY'}
+neighbor=neighbor[{'originID','neighID'}].rename({'originID':'OriginTract','neighID':'NeighborTract'},axis=1)
+
+neighbor.OriginTract = neighbor.OriginTract.astype(str).str.zfill(11)
+neighbor.NeighborTract = neighbor.NeighborTract.astype(str).str.zfill(11)
+
+adj1=df2.merge(neighbor,left_on='CENSUS_TRACT', right_on='OriginTract', how='inner')
+adj1=adj1[{'OriginTract','NeighborTract','Unemp_Rate'}].rename({'Unemp_Rate':'Origin_Rate'},axis=1)
+
+adj2=df2.merge(adj1,left_on='CENSUS_TRACT', right_on='NeighborTract', how='inner')
+adj2=adj2[{'OriginTract','NeighborTract','Origin_Rate','Unemp_Rate'}].rename({'Unemp_Rate':'Neighbor_Rate'},axis=1)
+
+adj2['ADJ_HUA_ACS']= np.where(adj2.Neighbor_Rate > acs_avg, 'YES', 'NO')
+adj2['ADJ_HUA_LUAS']= np.where(adj2.Neighbor_Rate > luas_avg, 'YES', 'NO')
+
+adj3y = adj2[(adj2['ADJ_HUA_ACS']=='YES') | (adj2['ADJ_HUA_LUAS']=='YES')]
+adj3n = adj2[(adj2['ADJ_HUA_ACS']=='NO') & (adj2['ADJ_HUA_LUAS']=='NO')]
+
+adj3yy=adj3y[{'OriginTract','ADJ_HUA_ACS','ADJ_HUA_LUAS'}]
+adj_yes=adj3yy.drop_duplicates()
+
+adj3nn=adj3n[{'OriginTract','ADJ_HUA_ACS','ADJ_HUA_LUAS'}]
+adj_no=adj3nn.drop_duplicates()
+
+adj_check=adj_yes.merge(adj_no, on='OriginTract', how='outer').fillna('NO')
+
+adj_check['QUALIFIED_ADJ_HUA']=np.where( (adj_check.ADJ_HUA_ACS_x=='YES')|(adj_check.ADJ_HUA_LUAS_x=='YES'), 'YES', 'NO')
+
+adj_check=adj_check[{'OriginTract','QUALIFIED_ADJ_HUA','ADJ_HUA_ACS_x','ADJ_HUA_LUAS_x'}].rename({'OriginTract':'CENSUS_TRACT','ADJ_HUA_ACS_x':'ADJ_HUA_ACS','ADJ_HUA_LUAS_x':'ADJ_HUA_LUAS'},axis=1)
+
+    ## merge neighbor with main file ##
+
+df3=df2.merge(adj_check[{'CENSUS_TRACT','QUALIFIED_ADJ_HUA'}], on='CENSUS_TRACT', how='inner').drop_duplicates()
+
+    ## finish up ##
+
+df3['QUALIFIED_HUA']=np.where( (df3.HUA_ACS=='YES')|(df3.HUA_LUAS=='YES'), 'YES', 'NO')
+
+neighbor_null=df3[(df3['QUALIFIED_ADJ_HUA'].isnull())]
+
+#df3= pd.DataFrame(pd.read_excel(r'Output/TEA_Data.xlsx'))
+
+df3['QUALIFIED_ADJ_HUA']=df3.QUALIFIED_ADJ_HUA.fillna('NO')
+
+df3= df3.applymap(str)
+
+conditions = [
+    
+(df3['QUALIFIED_ADJ_HUA']=='NO') & (df3['QUALIFIED_HUA']=='YES') & (df3['QUALIFIED_RURAL']=='NO'),
+
+((df3['QUALIFIED_ADJ_HUA']=='YES') | (df3['QUALIFIED_HUA']=='NO')) & (df3['QUALIFIED_RURAL']=='NO'),
+
+(df3['QUALIFIED_ADJ_HUA']=='NO') & (df3['QUALIFIED_HUA']=='NO') & (df3['QUALIFIED_RURAL']=='YES'),
+
+((df3['QUALIFIED_ADJ_HUA']=='YES') | (df3['QUALIFIED_HUA']=='YES')) & (df3['QUALIFIED_RURAL']=='YES'),
+
+(df3['QUALIFIED_ADJ_HUA']=='NO')  & (df3['QUALIFIED_HUA']=='NO') & (df3['QUALIFIED_RURAL']=='NO'),
+
+]
+
+TEA = ['TEA: Single-Tract HUA','TEA: Adjacent to HUA tract(s)','TEA: Rural',
+       'TEA: Both HUA & Rural','Not a TEA']
+
+df3['TEA_Category'] = np.select(conditions, TEA)
+
+df3['CENSUS_COUNTY'] = df3['CENSUS_COUNTY'].str[2:5]
+
+#df3.to_excel(r'Check/DF3_check.xlsx')
+
+dffinal = df3[['CENSUS_TRACT','CENSUS_STATE','CENSUS_COUNTY','CENSUS_PLACE',
+               'NAME_TRACT','NAME_PLACE','NAME_COUNTY',
+               'DP03_0005E','DP03_0003E','Unemp_Rate','HUA_ACS','HUA_LUAS','QUALIFIED_ADJ_HUA','QUALIFIED_HUA',
+               'MSA','QUALIFIED_RURAL','POP',
+               'TEA_Category']].drop_duplicates()
+
+    ## VARIOUS CHECKS FOR ERRORS ##
+    
+#dfcheck=df3.merge(dfcw, on='CENSUS_TRACT', how='inner')  
+#dfcheck.to_csv(r'check_place_pop.csv')    
+
+#neighbor_check=neighbor[(neighbor.OriginTract=='01003010600')]
+#adj2_check=adj2[(adj2.OriginTract=='02016000100')]
+#adj_no_check=adj_no[(adj_no.OriginTract=='02016000100')]
+#adj_check_check=adj_check[(adj_check.GEO_TRACT=='02016000100')]
+
+#df2_check=df2[(df2.GEO_TRACT=='02016000100')]
+
+#df3_check=df3[(df3.GEO_TRACT=='02016000100')]
+
+    ## OUTPUT DATA FILE ##
+
+from pathlib import Path  
+filepath = Path(dat_out)  
+dffinal.to_csv(filepath)  
+
+from pathlib import Path  
+filepath2 = Path(r'Output/TEA_Data.xlsx')  
+dffinal.to_excel(filepath2)  
+
+    ## OUTPUT NULL NEIGHBORS ##
+
+from pathlib import Path  
+filepath = Path(adj_out)  
+neighbor_null.to_csv(filepath) 
